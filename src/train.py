@@ -5,9 +5,11 @@ import torch.nn as nn
 import torch.optim as optim
 from collections import deque
 import random
-from sklearn.ensemble import ExtraTreesRegressor
+from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor
+
 import joblib
 import numpy as np
+import os
 
 env = TimeLimit(
     env=HIVPatient(domain_randomization=False), max_episode_steps=200
@@ -34,76 +36,72 @@ class QNetwork(nn.Module):
 # ENJOY!
 class ProjectAgent:
     def __init__(self):
-        state_dim = env.observation_space.shape[0]
-        action_dim = env.action_space.n
+        self.state_dim = env.observation_space.shape[0]
+        self.action_dim = env.action_space.n
 
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-        self.gamma = 0.99
-        self.buffer_size= 10000
-        self.n_estimators= 50
+        self.model = None
 
-        # Initialize ensemble decision trees for each action
-        self.models = [
-            ExtraTreesRegressor(n_estimators=self.n_estimators, random_state=42)
-            for _ in range(action_dim)
-        ]
-        self.replay_buffer = deque(maxlen=self.buffer_size)
-        self.is_trained = [False] * action_dim  # Track whether models are trained
     #built-in method
     def act(self, observation, use_random=False):
-        epsilon = 0.1
-        if np.random.rand() < epsilon or not all(self.is_trained):
-            return np.random.randint(self.action_dim)
+        """
+        Epsilon-greedy action selection using a single model.
+        """
+        if use_random or self.model is None:
+            return env.action_space.sample()
 
         # Predict Q-values for all actions
-        q_values = [model.predict([observation])[0] if self.is_trained[a] else 0
-                    for a, model in enumerate(self.models)]
-        return np.argmax(q_values)
-    
-    # built-in method
-    def save(self, path):
-        for a, model in enumerate(self.models):
-            joblib.dump(model, f"{path}_action_{a}.joblib")
+        state_batch = np.tile(observation, (self.action_dim, 1))  # Repeat state for each action
+        actions = np.arange(self.action_dim).reshape(-1, 1)  # Action indices
+        state_action_batch = np.hstack((state_batch, actions))  # Combine state and actions
+        q_values = self.model.predict(state_action_batch)
 
-    def train(self):
-        """Perform Fitted Q-Iteration."""
-        if len(self.replay_buffer) < 1000:  # Ensure enough data before training
-            return
-
-        # Decompose the replay buffer into separate arrays
-        states = np.array([transition[0] for transition in self.replay_buffer])
-        actions = np.array([transition[1] for transition in self.replay_buffer])
-        rewards = np.array([transition[2] for transition in self.replay_buffer])
-        next_states = np.array([transition[3] for transition in self.replay_buffer])
-        dones = np.array([transition[4] for transition in self.replay_buffer])
-
-        # Compute the target Q-values
-        q_targets = np.zeros(len(states))
-        for a in range(self.action_dim):
-            if self.is_trained[a]:
-                q_next = self.models[a].predict(next_states)
-                q_targets = np.maximum(q_targets, q_next)
-
-        targets = rewards + self.gamma * q_targets * ~dones
-
-        # Train separate regressors for each action
-        for a in range(self.action_dim):
-            mask = actions == a
-            if mask.sum() > 0:
-                X_train = states[mask]
-                y_train = targets[mask]
-                self.models[a].fit(X_train, y_train)
-                self.is_trained[a] = True
+        return np.argmax(q_values)  # Select action with maximum Q-value
     
     def store_transition(self, state, action, reward, next_state, done):
-        """Store transitions in the replay buffer."""
+        """Store a transition in the replay buffer."""
         self.replay_buffer.append((state, action, reward, next_state, done))
+
+    # built-in method
+    def save(self, path):
+        joblib.dump(self.model, path)
+        print(f"Model saved to {path}")
+
+    def train(self, S, A, R, S2, D, gamma=0.99, iterations=100):
+        """
+        Train the Q-function model using Fitted Q Iteration.
+        """
+        nb_samples = S.shape[0]
+        self.state_dim = S.shape[1]
+        self.action_dim = len(np.unique(A))
+
+        # Append actions to states for (s, a)
+        SA = np.hstack((S, A))
+
+        for iteration in range(iterations):
+            # Initialize targets
+            if self.model is None:
+                q_targets = R.copy()
+            else:
+                # Predict Q-values for next states and all actions
+                next_state_batch = np.repeat(S2, self.action_dim, axis=0)
+                next_actions = np.tile(np.arange(self.action_dim), len(S2)).reshape(-1, 1)
+                next_state_action_batch = np.hstack((next_state_batch, next_actions))
+                q_values_next = self.model.predict(next_state_action_batch)
+                q_values_next = q_values_next.reshape(len(S2), self.action_dim)
+
+                # Max Q(s', a') for each state
+                max_q_values_next = np.max(q_values_next, axis=1)
+                q_targets = R + gamma * max_q_values_next * (1 - D)
+
+            # Train the model on (s, a) -> Q(s, a)
+            model = HistGradientBoostingRegressor() if self.model is None else self.model
+            model.fit(SA, q_targets)
+            self.model = model
+
+            print(f"Iteration {iteration + 1}/{iterations} complete. Model updated.")
 
     #built-in method
     def load(self):
-        path="trained_fqi_agent"
-        for a in range(self.action_dim):
-            self.models[a] = joblib.load(f"{path}_action_{a}.joblib")
-            self.is_trained[a] = True
-
+        path="second_trained_fqi_agent"
+        self.model = joblib.load(path)
+        print(f"Model loaded from {path}")
