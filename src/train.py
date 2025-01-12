@@ -43,30 +43,22 @@ class ProjectAgent:
 
     #built-in method
     def act(self, observation, use_random=False):
-        """
-        Epsilon-greedy action selection using a single model.
-        """
         if use_random or self.model is None:
             return env.action_space.sample()
 
         # Predict Q-values for all actions
-        state_batch = np.tile(observation, (self.action_dim, 1))  # Repeat state for each action
-        actions = np.arange(self.action_dim).reshape(-1, 1)  # Action indices
-        state_action_batch = np.hstack((state_batch, actions))  # Combine state and actions
-        q_values = self.model.predict(state_action_batch)
-
-        return np.argmax(q_values)  # Select action with maximum Q-value
+        q_values = [
+            self.model.predict(np.append(observation, a).reshape(1, -1))[0]
+            for a in range(self.action_dim)
+        ]
+        return np.argmax(q_values)  # Choose the action with the highest Q-value
     
-    def store_transition(self, state, action, reward, next_state, done):
-        """Store a transition in the replay buffer."""
-        self.replay_buffer.append((state, action, reward, next_state, done))
-
     # built-in method
     def save(self, path):
         joblib.dump(self.model, path)
         print(f"Model saved to {path}")
 
-    def train(self, S, A, R, S2, D, gamma=0.99, iterations=100):
+    def train(self, S, A, R, S2, D, gamma=0.98, iterations=100):
         """
         Train the Q-function model using Fitted Q Iteration.
         """
@@ -74,22 +66,19 @@ class ProjectAgent:
         self.state_dim = S.shape[1]
         self.action_dim = len(np.unique(A))
 
-        # Append actions to states for (s, a)
+        # Combine states and actions for training
         SA = np.hstack((S, A))
 
         for iteration in range(iterations):
-            # Initialize targets
+            # Initialize target values
             if self.model is None:
                 q_targets = R.copy()
             else:
-                # Predict Q-values for next states and all actions
-                next_state_batch = np.repeat(S2, self.action_dim, axis=0)
-                next_actions = np.tile(np.arange(self.action_dim), len(S2)).reshape(-1, 1)
-                next_state_action_batch = np.hstack((next_state_batch, next_actions))
-                q_values_next = self.model.predict(next_state_action_batch)
-                q_values_next = q_values_next.reshape(len(S2), self.action_dim)
-
-                # Max Q(s', a') for each state
+                # Predict Q(s', a') for all actions and find max Q(s', a')
+                q_values_next = np.zeros((nb_samples, self.action_dim))
+                for a in range(self.action_dim):
+                    next_sa = np.hstack((S2, np.full((nb_samples, 1), a)))
+                    q_values_next[:, a] = self.model.predict(next_sa)
                 max_q_values_next = np.max(q_values_next, axis=1)
                 q_targets = R + gamma * max_q_values_next * (1 - D)
 
@@ -102,6 +91,6 @@ class ProjectAgent:
 
     #built-in method
     def load(self):
-        path="second_trained_fqi_agent.joblib"
+        path="final_fqi_model.joblib"
         self.model = joblib.load(path)
         print(f"Model loaded from {path}")

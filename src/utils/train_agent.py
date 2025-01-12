@@ -17,15 +17,24 @@ total_samples = n_patients * 200
 gamma = 0.98
 fqi_iterations = 100
 eps = 0.1  # Epsilon for exploration
+shuffle_stages = [3, 5, 7, 11, 13, 15]  # Stages for domain randomization
 
-# Initialize arrays for state, action, reward, next state, and done
+# Initialize dataset
 S, A, R, S2, D = [], [], [], [], []
 
-# Main training loop
-state, _ = env.reset()
+# training loop
 for stage in range(n_stages):
     print(f"Stage {stage + 1}/{n_stages}")
 
+    # Enable domain randomization for certain stages
+    if stage in shuffle_stages:
+        env = TimeLimit(env=HIVPatient(domain_randomization=True), max_episode_steps=200)
+    else:
+        env = TimeLimit(env=HIVPatient(domain_randomization=False), max_episode_steps=200)
+
+    # Collect samples
+    state, _ = env.reset()
+    cumulative_rewards = []
     for _ in range(total_samples // n_stages):
         # Epsilon-greedy action selection
         if agent.model is None or np.random.rand() < eps:
@@ -42,6 +51,7 @@ for stage in range(n_stages):
         R.append(reward)
         S2.append(next_state)
         D.append(done)
+        cumulative_rewards.append(reward)
 
         # Reset environment if the episode is done or truncated
         if done or trunc:
@@ -59,9 +69,10 @@ for stage in range(n_stages):
     # Train the agent with the collected samples
     agent.train(S_np, A_np, R_np, S2_np, D_np, gamma=gamma, iterations=fqi_iterations)
 
-    # Print progress
-    print(f"Training complete for stage {stage + 1}/{n_stages}. Collected samples: {len(S)}")
+    # log progress
+    avg_reward = np.mean(cumulative_rewards)
+    print(f"Stage {stage + 1}/{n_stages} complete. Avg Reward: {avg_reward:.2f}")
 
 # Save the trained models
-agent.save("second_trained_fqi_agent.joblib")
+agent.save("final_fqi_model.joblib")
 print("Agent saved.")
