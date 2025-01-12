@@ -102,6 +102,6 @@ class ProjectAgent:
 
     #built-in method
     def load(self):
-        path="second_trained_fqi_agent"
+        path="second_trained_fqi_agent.joblib"
         self.model = joblib.load(path)
         print(f"Model loaded from {path}")
