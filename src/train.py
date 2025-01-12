@@ -5,6 +5,9 @@ import torch.nn as nn
 import torch.optim as optim
 from collections import deque
 import random
+from sklearn.ensemble import ExtraTreesRegressor
+import joblib
+import numpy as np
 
 env = TimeLimit(
     env=HIVPatient(domain_randomization=False), max_episode_steps=200
@@ -30,63 +33,72 @@ class QNetwork(nn.Module):
 # Don't modify the methods names and signatures, but you can add methods.
 # ENJOY!
 class ProjectAgent:
-    def __init__(self):
-        state_dim = env.observation_space.shape[0]
-        action_dim = env.action_space.n
-
+    def __init__(self, state_dim, action_dim, gamma=0.99, n_estimators=50, buffer_size=10000):
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.gamma = 0.99
-        self.lr = 1e-3
-        self.batch_size = 64
-        self.replay_buffer = deque(maxlen=10000)
+        self.gamma = gamma
 
-        self.q_network = QNetwork(state_dim, action_dim)
-        self.target_network = QNetwork(state_dim, action_dim)
-        self.optimizer = optim.Adam(self.q_network.parameters(), lr=self.lr)
-        self.target_network.load_state_dict(self.q_network.state_dict())
-        self.target_network.eval()
+        # Initialize ensemble decision trees for each action
+        self.models = [
+            ExtraTreesRegressor(n_estimators=n_estimators, random_state=42)
+            for _ in range(action_dim)
+        ]
+        self.replay_buffer = deque(maxlen=buffer_size)
+        self.is_trained = [False] * action_dim  # Track whether models are trained
     #built-in method
     def act(self, observation, use_random=False):
         epsilon = 0.1
-        if use_random or random.random() < epsilon:
-            return env.action_space.sample()
-        observation = torch.FloatTensor(observation).unsqueeze(0)
-        with torch.no_grad():
-            q_values = self.q_network(observation)
-        return torch.argmax(q_values).item()
+        if np.random.rand() < epsilon or not all(self.is_trained):
+            return np.random.randint(self.action_dim)
+
+        # Predict Q-values for all actions
+        q_values = [model.predict([observation])[0] if self.is_trained[a] else 0
+                    for a, model in enumerate(self.models)]
+        return np.argmax(q_values)
     
     # built-in method
     def save(self, path):
-        torch.save(self.q_network.state_dict(), path)
+        for a, model in enumerate(self.models):
+            joblib.dump(model, f"{path}_action_{a}.joblib")
 
-    def train_step(self):
-        if len(self.replay_buffer) < self.batch_size:
+    def train(self):
+        """Perform Fitted Q-Iteration."""
+        if len(self.replay_buffer) < 1000:  # Ensure enough data before training
             return
 
-        batch = random.sample(self.replay_buffer, self.batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
+        # Decompose the replay buffer into separate arrays
+        states = np.array([transition[0] for transition in self.replay_buffer])
+        actions = np.array([transition[1] for transition in self.replay_buffer])
+        rewards = np.array([transition[2] for transition in self.replay_buffer])
+        next_states = np.array([transition[3] for transition in self.replay_buffer])
+        dones = np.array([transition[4] for transition in self.replay_buffer])
 
-        states = torch.FloatTensor(states)
-        actions = torch.LongTensor(actions).unsqueeze(1)
-        rewards = torch.FloatTensor(rewards).unsqueeze(1)
-        next_states = torch.FloatTensor(next_states)
-        dones = torch.FloatTensor(dones).unsqueeze(1)
+        # Compute the target Q-values
+        q_targets = np.zeros(len(states))
+        for a in range(self.action_dim):
+            if self.is_trained[a]:
+                q_next = self.models[a].predict(next_states)
+                q_targets = np.maximum(q_targets, q_next)
 
-        q_values = self.q_network(states).gather(1, actions)
-        with torch.no_grad():
-            next_q_values = self.target_network(next_states).max(1, keepdim=True)[0]
-            target_q_values = rewards + self.gamma * next_q_values * (1 - dones)
+        targets = rewards + self.gamma * q_targets * ~dones
 
-        loss = nn.MSELoss()(q_values, target_q_values)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-    def update_target_network(self):
-        self.target_network.load_state_dict(self.q_network.state_dict())
+        # Train separate regressors for each action
+        for a in range(self.action_dim):
+            mask = actions == a
+            if mask.sum() > 0:
+                X_train = states[mask]
+                y_train = targets[mask]
+                self.models[a].fit(X_train, y_train)
+                self.is_trained[a] = True
+    
+    def store_transition(self, state, action, reward, next_state, done):
+        """Store transitions in the replay buffer."""
+        self.replay_buffer.append((state, action, reward, next_state, done))
 
     #built-in method
     def load(self):
-        path="trained_hiv_agent.pth"
-        self.q_network.load_state_dict(torch.load(path))
-        self.target_network.load_state_dict(self.q_network.state_dict())
+        path="trained_fqi_agent"
+        for a in range(self.action_dim):
+            self.models[a] = joblib.load(f"{path}_action_{a}.joblib")
+            self.is_trained[a] = True
+

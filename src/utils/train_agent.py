@@ -8,35 +8,32 @@ from train import ProjectAgent
 
 env = TimeLimit(env=HIVPatient(domain_randomization=False), max_episode_steps=200)
 
-# Training parameters
+state_dim = env.observation_space.shape[0]
+action_dim = env.action_space.n
+agent = ProjectAgent(state_dim=state_dim, action_dim=action_dim)
+
 num_episodes = 500
-update_target_every = 10
 
-agent = ProjectAgent()
-
-# Training loop
 for episode in range(num_episodes):
     state, _ = env.reset()
     total_reward = 0
 
     for t in range(env._max_episode_steps):
-        # Take an action
-        action = agent.act(state, use_random=True)
-        next_state, reward, _, _, _ = env.step(action)  # Correct unpacking
+        # Select an action
+        action = agent.act(state)
+        next_state, reward, _, _, _ = env.step(action)
         total_reward += reward
 
-        # Store the transition in the replay buffer
-        agent.replay_buffer.append((state, action, reward, next_state, False))
-        agent.train_step()
+        # Store the transition and train
+        agent.store_transition(state, action, reward, next_state, False)
 
         state = next_state
 
-    
-    if episode % update_target_every == 0:
-        agent.update_target_network()
+    # Train the agent after each episode
+    agent.train()
 
     print(f"Episode {episode}, Total Reward: {total_reward}")
 
-save_path = "trained_hiv_agent.pth"
-agent.save(save_path)
-print(f"Agent saved to {save_path}")
+# Save the trained models
+agent.save("trained_fqi_agent")
+print("Agent saved.")
