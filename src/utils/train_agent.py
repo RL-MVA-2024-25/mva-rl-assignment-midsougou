@@ -7,10 +7,7 @@ from env_hiv import HIVPatient
 from train import ProjectAgent
 
 env = TimeLimit(env=HIVPatient(domain_randomization=False), max_episode_steps=200)
-
-state_dim = env.observation_space.shape[0]
-action_dim = env.action_space.n
-agent = ProjectAgent(state_dim=state_dim, action_dim=action_dim)
+agent = ProjectAgent()
 
 num_episodes = 500
 

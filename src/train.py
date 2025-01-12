@@ -33,17 +33,22 @@ class QNetwork(nn.Module):
 # Don't modify the methods names and signatures, but you can add methods.
 # ENJOY!
 class ProjectAgent:
-    def __init__(self, state_dim, action_dim, gamma=0.99, n_estimators=50, buffer_size=10000):
+    def __init__(self):
+        state_dim = env.observation_space.shape[0]
+        action_dim = env.action_space.n
+
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.gamma = gamma
+        self.gamma = 0.99
+        self.buffer_size= 10000
+        self.n_estimators= 50
 
         # Initialize ensemble decision trees for each action
         self.models = [
-            ExtraTreesRegressor(n_estimators=n_estimators, random_state=42)
+            ExtraTreesRegressor(n_estimators=self.n_estimators, random_state=42)
             for _ in range(action_dim)
         ]
-        self.replay_buffer = deque(maxlen=buffer_size)
+        self.replay_buffer = deque(maxlen=self.buffer_size)
         self.is_trained = [False] * action_dim  # Track whether models are trained
     #built-in method
     def act(self, observation, use_random=False):
