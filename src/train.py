@@ -16,20 +16,7 @@ env = TimeLimit(
 )  # The time wrapper limits the number of steps in an episode at 200.
 # Now is the floor is yours to implement the agent and train it.
 
-# Define a simple Neural Network for the Q-value approximation
-class QNetwork(nn.Module):
-    def __init__(self, state_dim, action_dim):
-        super(QNetwork, self).__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(state_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Linear(128, action_dim),
-        )
 
-    def forward(self, x):
-        return self.fc(x)
 
 # You have to implement your own agent.
 # Don't modify the methods names and signatures, but you can add methods.
@@ -49,7 +36,7 @@ class ProjectAgent:
         # Predict Q-values for all actions
         q_values = [
             self.model.predict(np.append(observation, a).reshape(1, -1))[0]
-            for a in range(self.action_dim)
+            for a in range(env.action_space.n)  # Dynamically access the action space
         ]
         return np.argmax(q_values)  # Choose the action with the highest Q-value
     
@@ -58,36 +45,80 @@ class ProjectAgent:
         joblib.dump(self.model, path)
         print(f"Model saved to {path}")
 
-    def train(self, S, A, R, S2, D, gamma=0.98, iterations=100):
-        """
-        Train the Q-function model using Fitted Q Iteration.
-        """
-        nb_samples = S.shape[0]
-        self.state_dim = S.shape[1]
-        self.action_dim = len(np.unique(A))
+    def sample(agent, env, num_samples, eps=0.1):
+        S, A, R, S2, D = [], [], [], [], []
+        cumulative_rewards = []
+        current_R = []
+        state, _ = env.reset()
 
-        # Combine states and actions for training
-        SA = np.hstack((S, A))
+        for _ in range(num_samples):
+            # Epsilon-greedy action selection
+            if np.random.rand() < eps:
+                action = env.action_space.sample()
+            else:
+                action = agent.act(state)
+
+            next_state, reward, done, trunc, _ = env.step(action)
+
+            # Append to dataset
+            S.append(state)
+            A.append(action)
+            R.append(reward)
+            S2.append(next_state)
+            D.append(done)
+
+            current_R.append(reward)
+
+            if done or trunc:
+                cumulative_rewards.append(np.sum(current_R))
+                current_R = []
+                state, _ = env.reset()
+            else:
+                state = next_state
+
+        return (
+            np.array(S),
+            np.array(A).reshape(-1, 1),
+            np.array(R),
+            np.array(S2),
+            np.array(D),
+            np.mean(cumulative_rewards),
+        )
+
+    def train(self, states, actions, rewards, next_states, done_flags, discount_factor, iterations=100, num_actions=4):
+        """
+        Train the Q-function using Fitted Q Iteration logic.
+        """
+        num_samples = states.shape[0]
+        state_action_pairs = np.append(states, actions, axis=1)  # Combine states and actions as input
+
+        current_model = self.model  # Start with the current Q-function, if available
 
         for iteration in range(iterations):
-            # Initialize target values
-            if self.model is None:
-                q_targets = R.copy()
+            # Compute Bellman targets
+            if current_model is None:
+                targets = rewards.copy()  # If no model exists, use immediate rewards
             else:
-                # Predict Q(s', a') for all actions and find max Q(s', a')
-                q_values_next = np.zeros((nb_samples, self.action_dim))
-                for a in range(self.action_dim):
-                    next_sa = np.hstack((S2, np.full((nb_samples, 1), a)))
-                    q_values_next[:, a] = self.model.predict(next_sa)
+                # Compute Q-values for all possible actions in next states
+                q_values_next = np.zeros((num_samples, num_actions))
+                for action_index in range(num_actions):
+                    action_column = np.full((num_samples, 1), action_index)
+                    next_state_action_pairs = np.append(next_states, action_column, axis=1)
+                    q_values_next[:, action_index] = current_model.predict(next_state_action_pairs)
+
+                # Take the maximum Q-value for each next state
                 max_q_values_next = np.max(q_values_next, axis=1)
-                q_targets = R + gamma * max_q_values_next * (1 - D)
 
-            # Train the model on (s, a) -> Q(s, a)
-            model = HistGradientBoostingRegressor() if self.model is None else self.model
-            model.fit(SA, q_targets)
-            self.model = model
+                # Compute updated targets using the Bellman equation
+                targets = rewards + discount_factor * max_q_values_next * (1 - done_flags)
 
-            print(f"Iteration {iteration + 1}/{iterations} complete. Model updated.")
+            # Train the Q-function approximator with updated targets
+            regressor = HistGradientBoostingRegressor(max_iter=200, learning_rate=0.1)
+            regressor.fit(state_action_pairs, targets)
+            current_model = regressor  # Update the Q-function
+
+        # Save the trained model
+        self.model = current_model
 
     #built-in method
     def load(self):

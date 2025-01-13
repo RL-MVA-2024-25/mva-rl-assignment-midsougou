@@ -10,68 +10,73 @@ import numpy as np
 env = TimeLimit(env=HIVPatient(domain_randomization=False), max_episode_steps=200)
 agent = ProjectAgent()
 
-# Experiment parameters
-n_patients = 20
-n_stages = 20
-total_samples = n_patients * 200
-gamma = 0.98
-fqi_iterations = 100
-eps = 0.1  # Epsilon for exploration
-shuffle_stages = [3, 5, 7, 11, 13, 15]  # Stages for domain randomization
+# Experiment hyperparameters
+num_stages = 20
+num_episodes_per_stage = 20
+randomization_stages = [3, 5, 7, 11, 13, 15]
+episode_steps = 200  # Maximum steps per episode
+training_iterations = 100
+discount_factor = 0.98
+total_samples_per_stage = num_episodes_per_stage * episode_steps
 
-# Initialize dataset
-S, A, R, S2, D = [], [], [], [], []
 
-# training loop
-for stage in range(n_stages):
-    print(f"Stage {stage + 1}/{n_stages}")
+# Stage 0: Initial sampling
+print("Starting initial sample collection")
+state_buffer, action_buffer, reward_buffer, next_state_buffer, terminal_buffer, avg_cumulative_reward = agent.sample(
+    env, total_samples_per_stage, eps=0.1
+)
 
-    # Enable domain randomization for certain stages
-    if stage in shuffle_stages:
-        env = TimeLimit(env=HIVPatient(domain_randomization=True), max_episode_steps=200)
+initial_dataset = [state_buffer, action_buffer, reward_buffer, next_state_buffer, terminal_buffer]
+print(f"Stage: 0 \t Average Reward: {avg_cumulative_reward:.2e}")
+
+# Train the initial Q-function
+agent.train(
+    state_buffer,
+    action_buffer,
+    reward_buffer,
+    next_state_buffer,
+    terminal_buffer,
+    discount_factor,
+    iterations=training_iterations,
+    num_actions=4)
+
+# Iterative training process
+for stage_index in range(1, num_stages):
+    print(f"Processing Stage {stage_index}/{num_stages}")
+
+    # Enable domain randomization for specific stages
+    if stage_index in randomization_stages:
+        env = TimeLimit(env=HIVPatient(domain_randomization=True), max_episode_steps=episode_steps)
     else:
-        env = TimeLimit(env=HIVPatient(domain_randomization=False), max_episode_steps=200)
+        env = TimeLimit(env=HIVPatient(domain_randomization=False), max_episode_steps=episode_steps)
 
-    # Collect samples
-    state, _ = env.reset()
-    cumulative_rewards = []
-    for _ in range(total_samples // n_stages):
-        # Epsilon-greedy action selection
-        if agent.model is None or np.random.rand() < eps:
-            action = env.action_space.sample()
-        else:
-            action = agent.act(state)
+    # Collect samples using the current Q-function
+    new_states, new_actions, new_rewards, new_next_states, new_terminals, new_avg_reward = agent.sample(
+        env, total_samples_per_stage, eps=0.1
+    )
+    print(f"Stage: {stage_index} \t Average Reward: {new_avg_reward:.2e}")
 
-        # Step in the environment
-        next_state, reward, done, trunc, _ = env.step(action)
+    # Append new samples to the dataset
+    state_buffer = np.vstack([state_buffer, new_states])
+    action_buffer = np.vstack([action_buffer, new_actions])
+    reward_buffer = np.hstack([reward_buffer, new_rewards])
+    next_state_buffer = np.vstack([next_state_buffer, new_next_states])
+    terminal_buffer = np.hstack([terminal_buffer, new_terminals])
 
-        # Store the transition
-        S.append(state)
-        A.append(action)
-        R.append(reward)
-        S2.append(next_state)
-        D.append(done)
-        cumulative_rewards.append(reward)
+    # Save the updated dataset
+    updated_dataset = [state_buffer, action_buffer, reward_buffer, next_state_buffer, terminal_buffer]
 
-        # Reset environment if the episode is done or truncated
-        if done or trunc:
-            state, _ = env.reset()
-        else:
-            state = next_state
-
-    # Convert data to NumPy arrays for training
-    S_np = np.array(S)
-    A_np = np.array(A).reshape(-1, 1)
-    R_np = np.array(R)
-    S2_np = np.array(S2)
-    D_np = np.array(D)
-
-    # Train the agent with the collected samples
-    agent.train(S_np, A_np, R_np, S2_np, D_np, gamma=gamma, iterations=fqi_iterations)
-
-    # log progress
-    avg_reward = np.mean(cumulative_rewards)
-    print(f"Stage {stage + 1}/{n_stages} complete. Avg Reward: {avg_reward:.2f}")
+    # Retrain the Q-function using the entire dataset
+    agent.train(
+        state_buffer,
+        action_buffer,
+        reward_buffer,
+        next_state_buffer,
+        terminal_buffer,
+        discount_factor,
+        iterations=training_iterations,
+        num_actions=4,
+    )
 
 # Save the trained models
 agent.save("final_fqi_model.joblib")
